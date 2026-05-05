@@ -1,0 +1,41 @@
+{
+  "name": "replay26",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "temporal:up": "docker compose up temporal",
+    "temporal:worker": "tsx src/temporal/worker.ts",
+    "sim:run": "tsx src/simulator/cli.ts"
+  },
+  "dependencies": {
+    "@temporalio/activity": "latest",
+    "@temporalio/client": "latest",
+    "@temporalio/common": "latest",
+    "@temporalio/worker": "latest",
+    "@temporalio/workflow": "latest",
+    "date-fns": "latest",
+    "lucide-react": "latest",
+    "nanoid": "latest",
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "recharts": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@temporalio/testing": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}

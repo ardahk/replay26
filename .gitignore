@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+dist
+.runtime
+.env
+*.log
+.DS_Store
+coverage
+tsconfig.tsbuildinfo
