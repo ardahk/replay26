@@ -66,7 +66,12 @@ interface AgentResponse {
 	role: 'brewmaster' | 'support';
 	batchId?: string;
 	message: string;
+	plan?: string[];
+	observations?: string[];
 	toolsUsed?: string[];
+	provider?: 'deepseek' | 'deterministic';
+	model?: string;
+	providerError?: string;
 	pendingAction?: {
 		type: 'approve_qa' | 'send_signal';
 		payload: unknown;
@@ -81,6 +86,12 @@ type AttentionPopover = 'qa' | 'alarms' | null;
 interface ChatMessage {
 	role: ChatRole;
 	text: string;
+	plan?: string[];
+	observations?: string[];
+	toolsUsed?: string[];
+	provider?: 'deepseek' | 'deterministic';
+	model?: string;
+	providerError?: string;
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -203,12 +214,24 @@ const FLOW_STEP_TITLES: Record<FlowStepId, string> = {
 	boil: 'Boil',
 	chill: 'Chill',
 	fermentation: 'Fermentation',
-	sensor: 'Tank sensors',
-	alarms: 'Alarms',
-	qa: 'Quality checks',
-	brewmaster: 'Brewmaster assistant',
-	support: 'Customer orders',
+	sensor: 'Telemetry ingest',
+	alarms: 'Alarm rules',
+	qa: 'Human QA',
+	brewmaster: 'Brewmaster agent',
+	support: 'Support agent',
 };
+
+const BREWMASTER_PROMPTS = [
+	'Review this batch and tell me the next operator move.',
+	'Check alarms and QA, then propose the safest action.',
+	'If temperature looks risky, prepare a confirmed override.',
+];
+
+const SUPPORT_PROMPTS = [
+	'What is available right now?',
+	'Give a customer-safe ETA for Hazy IPA.',
+	'Create an order for one Hazy IPA case.',
+];
 
 type SensorKey = 'temperatureC' | 'gravity' | 'pH' | 'co2Ppm';
 
@@ -245,6 +268,68 @@ function stepSensorFields(stepId: FlowStepId): StepSensorField[] | null {
 	}
 }
 
+function AgentTrace({ message }: { message: ChatMessage }) {
+	const plan = message.plan ?? [];
+	const observations = message.observations ?? [];
+	const toolsUsed = message.toolsUsed ?? [];
+	const provider = message.provider;
+	if (
+		message.role !== 'agent' ||
+		(plan.length === 0 &&
+			observations.length === 0 &&
+			toolsUsed.length === 0 &&
+			!provider)
+	) {
+		return null;
+	}
+	return (
+		<div className="agent-trace" aria-label="Agent activity">
+			{provider ? (
+				<div>
+					<strong>Provider</strong>
+					<div className="tool-chips">
+						<span>
+							{provider === 'deepseek'
+								? `DeepSeek${message.model ? ` · ${message.model}` : ''}`
+								: 'Deterministic fallback'}
+						</span>
+					</div>
+				</div>
+			) : null}
+			{plan.length > 0 ? (
+				<div>
+					<strong>Plan</strong>
+					<ul>
+						{plan.map((item) => (
+							<li key={item}>{item}</li>
+						))}
+					</ul>
+				</div>
+			) : null}
+			{toolsUsed.length > 0 ? (
+				<div>
+					<strong>Tools</strong>
+					<div className="tool-chips">
+						{toolsUsed.map((tool) => (
+							<span key={tool}>{statusLabel(tool)}</span>
+						))}
+					</div>
+				</div>
+			) : null}
+			{observations.length > 0 ? (
+				<div>
+					<strong>Observations</strong>
+					<ul>
+						{observations.map((item) => (
+							<li key={item}>{item}</li>
+						))}
+					</ul>
+				</div>
+			) : null}
+		</div>
+	);
+}
+
 export function OperatorConsole() {
 	const [tab, setTab] = useState<Tab>('operations');
 	const [beerName, setBeerName] = useState('Hazy IPA');
@@ -264,7 +349,12 @@ export function OperatorConsole() {
 	);
 	const [portalNotice, setPortalNotice] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [brewChatBusy, setBrewChatBusy] = useState(false);
+	const [supportChatBusy, setSupportChatBusy] = useState(false);
 	const [notice, setNotice] = useState('Ready.');
+	const [notificationPermission, setNotificationPermission] = useState<
+		NotificationPermission | 'unsupported' | null
+	>(null);
 	const [brewChat, setBrewChat] = useState<ChatMessage[]>([
 		{ role: 'agent', text: 'Ask me what is happening with the current batch.' },
 	]);
@@ -283,6 +373,8 @@ export function OperatorConsole() {
 	const [selectedFlowStepId, setSelectedFlowStepId] =
 		useState<FlowStepId | null>(null);
 	const brewDialogRef = useRef<HTMLDialogElement>(null);
+	const brewChatLogRef = useRef<HTMLDivElement>(null);
+	const supportChatLogRef = useRef<HTMLDivElement>(null);
 	const packageDialogRef = useRef<HTMLDialogElement>(null);
 	const orderFlowDialogRef = useRef<HTMLDialogElement>(null);
 	const [packageBeerName, setPackageBeerName] = useState('');
@@ -484,6 +576,18 @@ export function OperatorConsole() {
 			}
 		}
 	}, [alarms, pendingTasks, tab]);
+
+	useEffect(() => {
+		const node = brewChatLogRef.current;
+		if (!node) return;
+		node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
+	}, [brewChat]);
+
+	useEffect(() => {
+		const node = supportChatLogRef.current;
+		if (!node) return;
+		node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
+	}, [supportChat]);
 
 	useEffect(() => {
 		if (!attentionPopover) return;
@@ -726,37 +830,62 @@ export function OperatorConsole() {
 		});
 	}
 
-	async function sendBrewChat(confirm = false) {
-		if (!brewInput.trim() && !confirm) return;
-		const text = confirm ? 'Confirm action' : brewInput;
+	async function sendBrewChat(confirm = false, overrideText?: string) {
+		if (brewChatBusy) return;
+		const text = confirm ? 'Confirm action' : (overrideText ?? brewInput).trim();
+		if (!text && !confirm) return;
+		setBrewChatBusy(true);
 		if (!confirm) setBrewChat((items) => [...items, { role: 'user', text }]);
 		setBrewInput('');
-		const response = await fetchJson<AgentResponse>(
-			'/api/agents/brewmaster/chat',
-			{
-				method: 'POST',
-				body: JSON.stringify({
-					batchId: selectedBatchId || undefined,
-					message: text,
-					pendingAction: pendingBrewAction,
-					confirm,
-				}),
-			},
-		);
-		setPendingBrewAction(response.pendingAction);
-		setBrewChat((items) => [
-			...items,
-			{ role: 'agent', text: response.message },
-		]);
-		if (confirm) {
-			setPendingBrewAction(undefined);
-			await refresh();
+		try {
+			const response = await fetchJson<AgentResponse>(
+				'/api/agents/brewmaster/chat',
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						batchId: selectedBatchId || undefined,
+						message: text,
+						pendingAction: pendingBrewAction,
+						confirm,
+					}),
+				},
+			);
+			setPendingBrewAction(response.pendingAction);
+			setBrewChat((items) => [
+				...items,
+				{
+					role: 'agent',
+					text: response.message,
+					plan: response.plan,
+					observations: response.observations,
+					toolsUsed: response.toolsUsed,
+					provider: response.provider,
+					model: response.model,
+					providerError: response.providerError,
+				},
+			]);
+			if (confirm) {
+				setPendingBrewAction(undefined);
+				await refresh();
+			}
+		} catch (error) {
+			setBrewChat((items) => [
+				...items,
+				{
+					role: 'agent',
+					text: error instanceof Error ? error.message : String(error),
+				},
+			]);
+		} finally {
+			setBrewChatBusy(false);
 		}
 	}
 
-	async function sendSupportChat() {
-		if (!supportInput.trim()) return;
-		const text = supportInput;
+	async function sendSupportChat(overrideText?: string) {
+		if (supportChatBusy) return;
+		const text = (overrideText ?? supportInput).trim();
+		if (!text) return;
+		setSupportChatBusy(true);
 		setSupportInput('');
 		setSupportChat((items) => [...items, { role: 'user', text }]);
 		const response = await fetchJson<AgentResponse>(
@@ -779,15 +908,25 @@ export function OperatorConsole() {
 	async function requestDesktopAlerts() {
 		if (typeof Notification === 'undefined') {
 			setNotice('Desktop notifications are not supported in this browser.');
+			setNotificationPermission('unsupported');
 			return;
 		}
 		const permission = await Notification.requestPermission();
+		setNotificationPermission(permission);
 		if (permission === 'granted') {
 			setNotice('Desktop alerts enabled for new alarms and QA tasks.');
 		} else if (permission === 'denied') {
 			setNotice('Desktop alerts blocked — enable them in browser settings if needed.');
 		}
 	}
+
+	useEffect(() => {
+		if (typeof Notification === 'undefined') {
+			setNotificationPermission('unsupported');
+			return;
+		}
+		setNotificationPermission(Notification.permission);
+	}, []);
 
 	return (
 		<>
@@ -809,8 +948,9 @@ export function OperatorConsole() {
 						<Plus size={18} />
 						Brew new
 					</button>
-					{typeof Notification !== 'undefined' &&
-					Notification.permission !== 'granted' ? (
+					{notificationPermission &&
+					notificationPermission !== 'unsupported' &&
+					notificationPermission !== 'granted' ? (
 						<button
 							type="button"
 							className="topbar-link topbar-link-button"
@@ -904,7 +1044,7 @@ export function OperatorConsole() {
 												key={batch.batchId}
 												role="button"
 												tabIndex={busy ? -1 : 0}
-												aria-selected={batch.batchId === selectedBatchId}
+												aria-pressed={batch.batchId === selectedBatchId}
 												aria-label={`Select batch ${batch.beerName}`}
 												className={
 													batch.batchId === selectedBatchId
@@ -1283,6 +1423,79 @@ export function OperatorConsole() {
 							</div>
 						</section>
 					) : null}
+
+					<section className="panel chat-panel ops-area-agent">
+						<div className="section-head">
+							<div>
+								<h2>Brewmaster Copilot</h2>
+								<p>Operator-facing workflow help with confirmed actions</p>
+							</div>
+							<Bot size={20} />
+						</div>
+						<div className="prompt-row" aria-label="Brewmaster prompt shortcuts">
+							{BREWMASTER_PROMPTS.map((prompt) => (
+								<button
+									type="button"
+									className="prompt-chip"
+									disabled={busy || brewChatBusy}
+									key={prompt}
+									onClick={() => void sendBrewChat(false, prompt)}
+								>
+									{prompt}
+								</button>
+							))}
+						</div>
+						<div className="chat-log" ref={brewChatLogRef}>
+							{brewChat.map((message, index) => (
+								<div
+									className={`chat-message ${message.role}`}
+									key={`${message.role}-${index}`}
+								>
+									<p>{message.text}</p>
+									<AgentTrace message={message} />
+								</div>
+							))}
+						</div>
+						{pendingBrewAction ? (
+							<div className="pending-action">
+								<div>
+									<strong>Action ready</strong>
+									<span>
+										{pendingBrewAction.type === 'approve_qa'
+											? 'Approve QA task'
+											: 'Send manual override'}
+									</span>
+								</div>
+								<button
+									type="button"
+									className="primary"
+									disabled={busy || brewChatBusy}
+									onClick={() => void sendBrewChat(true)}
+								>
+									<CheckCircle2 size={18} />
+									Confirm
+								</button>
+							</div>
+						) : null}
+						<div className="inline">
+							<input
+								value={brewInput}
+								onChange={(event) => setBrewInput(event.target.value)}
+								onKeyDown={(event) => {
+									if (event.key === 'Enter' && !event.shiftKey) {
+										event.preventDefault();
+										void sendBrewChat();
+									}
+								}}
+							/>
+							<button
+								disabled={busy || brewChatBusy}
+								onClick={() => void sendBrewChat()}
+							>
+								<Send size={18} />
+							</button>
+						</div>
+					</section>
 				</div>
 
 				<dialog
@@ -1375,19 +1588,45 @@ export function OperatorConsole() {
 							</div>
 							<MessageSquare size={20} />
 						</div>
-						<div className="chat-log">
+						<div className="prompt-row" aria-label="Support prompt shortcuts">
+							{SUPPORT_PROMPTS.map((prompt) => (
+								<button
+									type="button"
+									className="prompt-chip"
+									disabled={busy || supportChatBusy}
+									key={prompt}
+									onClick={() => void sendSupportChat(prompt)}
+								>
+									{prompt}
+								</button>
+							))}
+						</div>
+						<div className="chat-log" ref={supportChatLogRef}>
 							{supportChat.map((message, index) => (
-								<p className={message.role} key={`${message.role}-${index}`}>
-									{message.text}
-								</p>
+								<div
+									className={`chat-message ${message.role}`}
+									key={`${message.role}-${index}`}
+								>
+									<p>{message.text}</p>
+									<AgentTrace message={message} />
+								</div>
 							))}
 						</div>
 						<div className="inline">
 							<input
 								value={supportInput}
 								onChange={(event) => setSupportInput(event.target.value)}
+								onKeyDown={(event) => {
+									if (event.key === 'Enter' && !event.shiftKey) {
+										event.preventDefault();
+										void sendSupportChat();
+									}
+								}}
 							/>
-							<button disabled={busy} onClick={() => void sendSupportChat()}>
+							<button
+								disabled={busy || supportChatBusy}
+								onClick={() => void sendSupportChat()}
+							>
 								<Send size={18} />
 							</button>
 						</div>
