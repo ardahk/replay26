@@ -3,8 +3,8 @@ import "@xyflow/react/dist/style.css";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "Replay 26 Brewery Demo",
-  description: "Next.js and Temporal brewery process demo"
+  title: "Brewery Operations Console",
+  description: "Monitor batches, telemetry, QA, and alarms with Temporal-backed workflows."
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

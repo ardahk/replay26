@@ -9,9 +9,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function etaForStage(stage?: string): string {
-  if (stage === "fermentation") return "about 3-5 demo days";
-  if (stage === "chill") return "after fermentation starts shortly";
-  if (stage === "mash" || stage === "boil") return "later today in demo time";
+  if (stage === "fermentation") return "about 3–5 days once fermentation stabilizes";
+  if (stage === "chill") return "shortly after fermentation is underway";
+  if (stage === "mash" || stage === "boil") return "later today after kettle operations finish";
   return "once the next batch completes fermentation";
 }
 
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
 
     if (lower.includes("order") || lower.includes("buy")) {
       const parsed = orderCreateSchema.safeParse({
-        customer: { name: "Demo Customer" },
+        customer: { name: "Guest" },
         product: productMatch?.productName ?? batchMatch?.beerName ?? "Hazy IPA",
         quantity: 1
       });
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         role: "support",
         toolsUsed: ["check_inventory", "create_order"],
-        message: `I created demo order ${order.id} for ${order.quantity} ${order.product}. ${order.status === "created" ? "It is available now." : "It will be ready when the next batch finishes."}`,
+        message: `I created order ${order.id} for ${order.quantity} ${order.product}. ${order.status === "created" ? "It is available now." : "It will be ready when the next batch finishes."}`,
         order
       });
     }

@@ -76,7 +76,7 @@ export async function getBatchSummaries(): Promise<BatchSummary[]> {
     const eventStage = stageFromEvent(event.type);
     byBatch.set(event.batchId, {
       batchId: event.batchId,
-      beerName: event.beerName ?? existing?.beerName ?? event.message.replace(" brew day started", "") ?? "Demo Beer",
+      beerName: event.beerName ?? existing?.beerName ?? event.message.replace(" brew day started", "") ?? "Unnamed recipe",
       status: existing?.status ?? "running",
       stage: eventStage ?? existing?.stage ?? "queued",
       startedAt: existing?.startedAt ?? event.timestamp,
@@ -92,7 +92,7 @@ export async function getBatchSummaries(): Promise<BatchSummary[]> {
     if (!existing || reading.timestamp >= (existing.latestReading?.timestamp ?? "")) {
       byBatch.set(reading.batchId, {
         batchId: reading.batchId,
-        beerName: existing?.beerName ?? "Demo Beer",
+        beerName: existing?.beerName ?? "Unnamed recipe",
         status: existing?.status ?? "running",
         stage: existing?.stage ?? "fermentation",
         startedAt: existing?.startedAt ?? reading.timestamp,
