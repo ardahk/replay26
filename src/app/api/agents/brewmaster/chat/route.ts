@@ -28,10 +28,10 @@ export async function POST(request: Request) {
     if (payload.confirm && payload.pendingAction) {
       if (payload.pendingAction.type === "approve_qa") {
         await temporalBridge("approve-qa", { batchId, payload: payload.pendingAction.payload as ApproveQaInput });
-        return NextResponse.json({ role: "brewmaster", batchId, message: "QA approval sent into the fermentation workflow." });
+        return NextResponse.json({ role: "brewmaster", batchId, message: "QA approval sent — fermentation can continue." });
       }
       await temporalBridge("manual-override", { batchId, payload: payload.pendingAction.payload as ManualOverrideInput });
-      return NextResponse.json({ role: "brewmaster", batchId, message: "Manual override signal sent into the fermentation workflow." });
+      return NextResponse.json({ role: "brewmaster", batchId, message: "Manual override applied on the fermentation side." });
     }
 
     const [live, readings, alarms, tasks] = await Promise.all([
@@ -60,7 +60,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         role: "brewmaster",
         batchId,
-        message: "I can send a manual override signal, but I need confirmation before touching the workflow.",
+        message: "I can apply a manual override on fermentation, but I need you to confirm first.",
         pendingAction: {
           type: "send_signal",
           payload: { note: `Operator requested: ${payload.message}` }

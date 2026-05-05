@@ -64,6 +64,16 @@ button.warn {
   color: white;
 }
 
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
+
+button.danger:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
@@ -157,6 +167,10 @@ p {
 .topbar-link:hover {
   border-color: var(--accent);
   background: var(--surface-2);
+}
+
+.topbar-actions button.topbar-link-button {
+  cursor: pointer;
 }
 
 .dashboard {
@@ -762,8 +776,7 @@ p {
   stroke-width: 2;
 }
 
-.react-flow__controls,
-.react-flow__minimap {
+.react-flow__controls {
   border: 1px solid var(--line);
   box-shadow: none;
 }
@@ -812,6 +825,107 @@ p {
 
 .support-grid .feed {
   max-height: min(480px, 55vh);
+}
+
+.portal-customer-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.portal-customer-grid .portal-customer-products,
+.portal-customer-grid .portal-orders-feed,
+.support-ops-orders .portal-orders-feed {
+  max-height: min(520px, 58vh);
+}
+
+.support-ops-orders {
+  margin-top: var(--gap);
+}
+
+.order-flow-modal .order-flow-modal-panel {
+  max-width: min(920px, 96vw);
+}
+
+.order-flow-summary {
+  margin: 0 0 8px;
+  line-height: 1.55;
+}
+
+.order-flow-summary small {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82em;
+  color: var(--muted);
+}
+
+.order-flow-diagram-wrap {
+  width: 100%;
+  min-height: 300px;
+  height: 320px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin: 12px 0;
+}
+
+.order-flow-root {
+  width: 100%;
+  height: 100%;
+  min-height: 280px;
+}
+
+.order-feed-row-clickable {
+  cursor: pointer;
+}
+
+.order-feed-row-clickable:hover {
+  border-color: var(--accent);
+}
+
+.order-feed-row-selected {
+  border-left-color: var(--accent-2);
+  background: var(--surface-2);
+}
+
+.portal-product-row.inventory-item {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.portal-product-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.portal-qty-label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  justify-items: start;
+}
+
+.portal-qty-label input {
+  width: 72px;
+}
+
+@media (max-width: 720px) {
+  .portal-product-row.inventory-item {
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+  }
+
+  .portal-product-row.inventory-item button {
+    justify-self: start;
+  }
+}
+
+@media (max-width: 640px) {
+  .portal-customer-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .chat-log {

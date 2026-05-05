@@ -69,15 +69,25 @@ export async function getBatchSummaries(): Promise<BatchSummary[]> {
     readJsonl<AlarmEvent>("alarms"),
     getManualTasks()
   ]);
+  const inactiveBatchIds = new Set(
+    events
+      .filter(
+        (event) =>
+          event.type === "batch_cancelled" || event.type === "fermentation_monitoring_complete"
+      )
+      .map((event) => event.batchId)
+  );
   const byBatch = new Map<string, BatchSummary>();
 
   for (const event of events) {
     const existing = byBatch.get(event.batchId);
     const eventStage = stageFromEvent(event.type);
+    const isTerminal =
+      event.type === "batch_cancelled" || event.type === "fermentation_monitoring_complete";
     byBatch.set(event.batchId, {
       batchId: event.batchId,
       beerName: event.beerName ?? existing?.beerName ?? event.message.replace(" brew day started", "") ?? "Unnamed recipe",
-      status: existing?.status ?? "running",
+      status: isTerminal ? "complete" : (existing?.status ?? "running"),
       stage: eventStage ?? existing?.stage ?? "queued",
       startedAt: existing?.startedAt ?? event.timestamp,
       updatedAt: event.timestamp,
@@ -109,21 +119,54 @@ export async function getBatchSummaries(): Promise<BatchSummary[]> {
     const pendingTasks = tasks.filter((task) => task.batchId === summary.batchId && task.status === "pending");
     summary.alarmCount = batchAlarms.length;
     summary.pendingTaskCount = pendingTasks.length;
+    if (inactiveBatchIds.has(summary.batchId)) {
+      summary.status = "complete";
+      continue;
+    }
     summary.status = pendingTasks.length > 0 || batchAlarms.some((alarm) => alarm.severity === "critical") ? "needs_attention" : "running";
   }
 
   return [...byBatch.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 }
 
+function mergeInventoryByLatestSku(items: InventoryItem[]): InventoryItem[] {
+  const bySku = new Map<string, InventoryItem>();
+  for (const item of items) {
+    const prev = bySku.get(item.sku);
+    const ts = item.updatedAt ?? "";
+    const prevTs = prev?.updatedAt ?? "";
+    if (!prev || ts.localeCompare(prevTs) >= 0) {
+      bySku.set(item.sku, item);
+    }
+  }
+  return [...bySku.values()].sort((a, b) => a.sku.localeCompare(b.sku));
+}
+
 export async function getInventory(): Promise<InventoryItem[]> {
   const items = await readJsonl<InventoryItem>("inventory");
-  if (items.length > 0) return items;
-  return [
-    { sku: "HAZY-IPA-CASE", productName: "Hazy IPA", quantity: 18, unit: "case", updatedAt: new Date().toISOString() },
-    { sku: "PILSNER-KEG", productName: "Pilsner", quantity: 6, unit: "keg", updatedAt: new Date().toISOString() }
-  ];
+  if (items.length === 0) {
+    return [
+      { sku: "HAZY-IPA-CASE", productName: "Hazy IPA", quantity: 18, unit: "case", updatedAt: new Date().toISOString() },
+      { sku: "PILSNER-KEG", productName: "Pilsner", quantity: 6, unit: "keg", updatedAt: new Date().toISOString() }
+    ];
+  }
+  return mergeInventoryByLatestSku(items);
+}
+
+function mergeOrdersByLatestId(rows: Order[]): Order[] {
+  const byId = new Map<string, Order>();
+  for (const o of rows) {
+    const prev = byId.get(o.id);
+    const t = o.updatedAt ?? o.createdAt;
+    const prevT = prev ? (prev.updatedAt ?? prev.createdAt) : "";
+    if (!prev || t.localeCompare(prevT) >= 0) {
+      byId.set(o.id, o);
+    }
+  }
+  return [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function getOrders(): Promise<Order[]> {
-  return readJsonl<Order>("orders");
+  const rows = await readJsonl<Order>("orders");
+  return mergeOrdersByLatestId(rows);
 }

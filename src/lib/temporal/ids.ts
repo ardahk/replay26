@@ -7,3 +7,7 @@ export function brewWorkflowId(batchId: string): string {
 export function fermentationWorkflowId(batchId: string): string {
   return `fermentation-${batchId}`;
 }
+
+export function orderFulfillmentWorkflowId(orderId: string): string {
+  return `order-fulfillment-${orderId}`;
+}

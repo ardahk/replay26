@@ -1,9 +1,18 @@
+import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
-import type { BrewWorkflowStatus, FermentationStatus, SensorReading, StartBatchInput } from "../lib/domain/types";
-import { brewWorkflowId, fermentationWorkflowId, TASK_QUEUE } from "../lib/temporal/ids";
+import type {
+  BrewWorkflowStatus,
+  FermentationStatus,
+  Order,
+  PackagedStockAdjustment,
+  SensorReading,
+  StartBatchInput
+} from "../lib/domain/types";
+import { brewWorkflowId, fermentationWorkflowId, orderFulfillmentWorkflowId, TASK_QUEUE } from "../lib/temporal/ids";
 import {
   APPROVE_QA_SIGNAL,
   BREW_STATUS_QUERY,
+  COMPLETE_FERMENTATION_SIGNAL,
   FERMENTATION_STATUS_QUERY,
   MANUAL_OVERRIDE_SIGNAL,
   SENSOR_READING_SIGNAL
@@ -35,9 +44,25 @@ async function main() {
     return;
   }
 
+  if (op === "start-order") {
+    const { order } = decodePayload<{ order: Order }>();
+    await temporal.workflow.start("orderFulfillmentWorkflow", {
+      taskQueue: TASK_QUEUE,
+      workflowId: orderFulfillmentWorkflowId(order.id),
+      args: [order]
+    });
+    console.log(JSON.stringify({ workflowId: orderFulfillmentWorkflowId(order.id) }));
+    return;
+  }
+
   if (op === "status") {
     const { batchId } = decodePayload<{ batchId: string }>();
-    const brew = await temporal.workflow.getHandle(brewWorkflowId(batchId)).query<BrewWorkflowStatus>(BREW_STATUS_QUERY);
+    let brew: BrewWorkflowStatus | null = null;
+    try {
+      brew = await temporal.workflow.getHandle(brewWorkflowId(batchId)).query<BrewWorkflowStatus>(BREW_STATUS_QUERY);
+    } catch {
+      brew = null;
+    }
     let fermentation: FermentationStatus | null = null;
     try {
       fermentation = await temporal.workflow.getHandle(fermentationWorkflowId(batchId)).query<FermentationStatus>(FERMENTATION_STATUS_QUERY);
@@ -66,6 +91,39 @@ async function main() {
     const { batchId, payload } = decodePayload<{ batchId: string; payload: unknown }>();
     await temporal.workflow.getHandle(fermentationWorkflowId(batchId)).signal(APPROVE_QA_SIGNAL, payload);
     console.log(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (op === "complete-fermentation") {
+    const { batchId } = decodePayload<{ batchId: string }>();
+    await temporal.workflow.getHandle(fermentationWorkflowId(batchId)).signal(COMPLETE_FERMENTATION_SIGNAL);
+    console.log(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (op === "cancel-batch") {
+    const { batchId } = decodePayload<{ batchId: string }>();
+    const ids = [fermentationWorkflowId(batchId), brewWorkflowId(batchId)];
+    for (const workflowId of ids) {
+      try {
+        await temporal.workflow.getHandle(workflowId).cancel();
+      } catch {
+        /* Workflow may not exist or already finished */
+      }
+    }
+    console.log(JSON.stringify({ ok: true, attempted: ids }));
+    return;
+  }
+
+  if (op === "adjust-packaged-stock") {
+    const adjustment = decodePayload<PackagedStockAdjustment>();
+    const workflowId = `packaged-stock-${randomUUID()}`;
+    await temporal.workflow.start("packagedStockWorkflow", {
+      taskQueue: TASK_QUEUE,
+      workflowId,
+      args: [adjustment]
+    });
+    console.log(JSON.stringify({ ok: true, workflowId }));
     return;
   }
 

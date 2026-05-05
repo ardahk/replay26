@@ -61,7 +61,7 @@ export async function brewDayWorkflow(input: StartBatchInput): Promise<void> {
   updatedAt = new Date(Date.now()).toISOString();
   fermentationWorkflowId = `fermentation-${input.batchId}`;
 
-  await startChild(fermentationMonitorWorkflow, {
+  const fermentationChild = await startChild(fermentationMonitorWorkflow, {
     workflowId: fermentationWorkflowId,
     args: [{ ...input, startedAt: updatedAt }]
   });
@@ -74,5 +74,5 @@ export async function brewDayWorkflow(input: StartBatchInput): Promise<void> {
     beerName: input.beerName
   });
 
-  await sleep("365 days");
+  await fermentationChild.result();
 }

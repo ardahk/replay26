@@ -2,12 +2,16 @@
 
 import {
 	Activity,
+	Ban,
+	Beer,
 	Bell,
 	Bot,
 	CheckCircle2,
 	FlaskConical,
 	Gauge,
 	MessageSquare,
+	Package,
+	PackagePlus,
 	Plus,
 	RefreshCw,
 	Send,
@@ -26,6 +30,7 @@ import type {
 	InventoryItem,
 	ManualTask,
 	Order,
+	OrderWithFulfillment,
 	SensorReading,
 } from '../lib/domain/types';
 
@@ -38,6 +43,13 @@ const SensorChart = dynamic(
 
 const ProcessFlow = dynamic(
 	() => import('./process-flow').then((module) => module.ProcessFlow),
+	{
+		ssr: false,
+	},
+);
+
+const OrderFulfillmentFlow = dynamic(
+	() => import('./order-flow').then((module) => module.OrderFulfillmentFlow),
 	{
 		ssr: false,
 	},
@@ -62,7 +74,7 @@ interface AgentResponse {
 	order?: Order;
 }
 
-type Tab = 'operations' | 'support';
+type Tab = 'operations' | 'support' | 'customer';
 type ChatRole = 'user' | 'agent';
 type AttentionPopover = 'qa' | 'alarms' | null;
 
@@ -79,7 +91,22 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 			...(init?.headers ?? {}),
 		},
 	});
-	const json = (await response.json()) as T & { error?: string };
+	const text = await response.text();
+	const trimmed = text.trim();
+	if (!trimmed) {
+		if (!response.ok) {
+			throw new Error(response.statusText || `Something went wrong (${response.status}).`);
+		}
+		throw new Error('No data came back from the server. Check your connection and try again.');
+	}
+	let json: T & { error?: string };
+	try {
+		json = JSON.parse(trimmed) as T & { error?: string };
+	} catch {
+		throw new Error(
+			"The server returned something we couldn't read. Refresh the page or try again later.",
+		);
+	}
 	if (!response.ok) throw new Error(json.error ?? response.statusText);
 	return json;
 }
@@ -107,6 +134,64 @@ function statusLabel(status?: string): string {
 	return status ? status.replaceAll('_', ' ') : 'waiting';
 }
 
+function formatOrderDisplay(order: OrderWithFulfillment): string {
+	const live = order.fulfillment?.phase;
+	if (live === 'allocating') return 'Checking packaged stock…';
+	if (live === 'awaiting_inventory') return 'Waiting on packaged beer';
+	if (live === 'fulfilled') return 'Ready to go out';
+	if (order.status === 'ready') return 'Ready to go out';
+	if (order.status === 'pending_batch') return 'Waiting on more beer from the cellar';
+	return statusLabel(order.status);
+}
+
+function OrderStatusFeed({
+	orders,
+	selectedOrderId,
+	onSelectOrder,
+}: {
+	orders: OrderWithFulfillment[];
+	selectedOrderId?: string | null;
+	onSelectOrder?: (order: OrderWithFulfillment) => void;
+}) {
+	if (orders.length === 0) {
+		return <p className="note">No orders yet.</p>;
+	}
+	return (
+		<>
+			{orders.map((order) => (
+				<article
+					className={`inventory-item${onSelectOrder ? ' order-feed-row-clickable' : ''}${selectedOrderId === order.id ? ' order-feed-row-selected' : ''}`}
+					key={order.id}
+					role={onSelectOrder ? 'button' : undefined}
+					tabIndex={onSelectOrder ? 0 : undefined}
+					onClick={
+						onSelectOrder ? () => onSelectOrder(order) : undefined
+					}
+					onKeyDown={
+						onSelectOrder
+							? (event) => {
+									if (event.key === 'Enter' || event.key === ' ') {
+										event.preventDefault();
+										onSelectOrder(order);
+									}
+								}
+							: undefined
+					}
+				>
+					<strong>{order.product}</strong>
+					<span>
+						{order.quantity} units · {formatOrderDisplay(order)}
+					</span>
+					<small>
+						{order.id} · {order.customer.name}
+						{onSelectOrder ? ' · Open progress map' : ''}
+					</small>
+				</article>
+			))}
+		</>
+	);
+}
+
 function shortBatchId(batchId: string): string {
 	if (batchId.length <= 14) return batchId;
 	return `…${batchId.slice(-8)}`;
@@ -118,11 +203,11 @@ const FLOW_STEP_TITLES: Record<FlowStepId, string> = {
 	boil: 'Boil',
 	chill: 'Chill',
 	fermentation: 'Fermentation',
-	sensor: 'Telemetry ingest',
-	alarms: 'Alarm rules',
-	qa: 'Human QA',
-	brewmaster: 'Brewmaster agent',
-	support: 'Support agent',
+	sensor: 'Tank sensors',
+	alarms: 'Alarms',
+	qa: 'Quality checks',
+	brewmaster: 'Brewmaster assistant',
+	support: 'Customer orders',
 };
 
 type SensorKey = 'temperatureC' | 'gravity' | 'pH' | 'co2Ppm';
@@ -170,6 +255,14 @@ export function OperatorConsole() {
 	const [alarms, setAlarms] = useState<AlarmEvent[]>([]);
 	const [tasks, setTasks] = useState<ManualTask[]>([]);
 	const [inventory, setInventory] = useState<InventoryItem[]>([]);
+	const [orders, setOrders] = useState<OrderWithFulfillment[]>([]);
+	const [stockSimMessage, setStockSimMessage] = useState<string | null>(null);
+	const [portalCustomerName, setPortalCustomerName] = useState('');
+	const [portalCustomerEmail, setPortalCustomerEmail] = useState('');
+	const [portalQtyBySku, setPortalQtyBySku] = useState<Record<string, number>>(
+		{},
+	);
+	const [portalNotice, setPortalNotice] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [notice, setNotice] = useState('Ready.');
 	const [brewChat, setBrewChat] = useState<ChatMessage[]>([
@@ -190,9 +283,22 @@ export function OperatorConsole() {
 	const [selectedFlowStepId, setSelectedFlowStepId] =
 		useState<FlowStepId | null>(null);
 	const brewDialogRef = useRef<HTMLDialogElement>(null);
+	const packageDialogRef = useRef<HTMLDialogElement>(null);
+	const orderFlowDialogRef = useRef<HTMLDialogElement>(null);
+	const [packageBeerName, setPackageBeerName] = useState('');
+	const [packageQuantityDelta, setPackageQuantityDelta] = useState('12');
+	const [packageUnit, setPackageUnit] = useState<'case' | 'keg' | 'can'>(
+		'case',
+	);
+	const [selectedOrderIdForFlow, setSelectedOrderIdForFlow] = useState<
+		string | null
+	>(null);
 	const attentionPopoverRef = useRef<HTMLDivElement>(null);
 	const [attentionPopover, setAttentionPopover] =
 		useState<AttentionPopover>(null);
+	const sessionStartMsRef = useRef(Date.now());
+	const notifiedAlarmIdsRef = useRef<Set<string>>(new Set());
+	const notifiedTaskIdsRef = useRef<Set<string>>(new Set());
 
 	const selectedBatch = useMemo(
 		() => batches.find((batch) => batch.batchId === selectedBatchId),
@@ -201,6 +307,17 @@ export function OperatorConsole() {
 	const batchesSorted = useMemo(
 		() => [...batches].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
 		[batches],
+	);
+	const ordersRecent = useMemo(
+		() => [...orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+		[orders],
+	);
+	const selectedOrderForFlow = useMemo(
+		() =>
+			selectedOrderIdForFlow
+				? orders.find((o) => o.id === selectedOrderIdForFlow) ?? null
+				: null,
+		[orders, selectedOrderIdForFlow],
 	);
 	const currentReading = status?.fermentation?.latestReading ?? readings.at(-1);
 	const chartSeriesKeys = useMemo(() => {
@@ -215,22 +332,35 @@ export function OperatorConsole() {
 			(!selectedBatchId || task.batchId === selectedBatchId),
 	);
 
-	const refresh = useCallback(
-		async (selectOverride?: string | null) => {
-			const explicitSelection = selectOverride !== undefined;
+	const selectOrderForFlow = useCallback((order: OrderWithFulfillment) => {
+		setSelectedOrderIdForFlow(order.id);
+	}, []);
 
-			const [
-				{ batches: batchList },
-				{ tasks: manualTasks },
-				{ inventory: inventoryItems },
-			] = await Promise.all([
-				fetchJson<{ batches: BatchSummary[] }>('/api/batches'),
-				fetchJson<{ tasks: ManualTask[] }>('/api/manual-tasks'),
-				fetchJson<{ inventory: InventoryItem[] }>('/api/inventory'),
-			]);
+	const refresh = useCallback(
+		async (
+			selectOverride?: string | null,
+			options?: { includeOrders?: boolean },
+		) => {
+			const explicitSelection = selectOverride !== undefined;
+			const loadOrders =
+				tab !== 'operations' || options?.includeOrders === true;
+
+			const [batchPayload, taskPayload, inventoryPayload, orderPayload] =
+				await Promise.all([
+					fetchJson<{ batches: BatchSummary[] }>('/api/batches'),
+					fetchJson<{ tasks: ManualTask[] }>('/api/manual-tasks'),
+					fetchJson<{ inventory: InventoryItem[] }>('/api/inventory'),
+					loadOrders
+						? fetchJson<{ orders: OrderWithFulfillment[] }>('/api/orders')
+						: Promise.resolve(null),
+				]);
+			const batchList = batchPayload.batches;
+			const manualTasks = taskPayload.tasks;
+			const inventoryItems = inventoryPayload.inventory;
 			setBatches(batchList);
 			setTasks(manualTasks);
 			setInventory(inventoryItems);
+			if (orderPayload) setOrders(orderPayload.orders);
 
 			if (batchList.length === 0) {
 				setSelectedBatchId('');
@@ -289,7 +419,7 @@ export function OperatorConsole() {
 			setReadings(historyPayload.readings);
 			setAlarms(alarmPayload.alarms);
 		},
-		[selectedBatchId],
+		[selectedBatchId, tab],
 	);
 
 	useEffect(() => {
@@ -302,8 +432,58 @@ export function OperatorConsole() {
 	}, [refresh]);
 
 	useEffect(() => {
+		if (tab === 'support' || tab === 'customer') {
+			void refresh();
+		}
+	}, [tab, refresh]);
+
+	useEffect(() => {
+		if (!selectedOrderIdForFlow || !selectedOrderForFlow) return;
+		const el = orderFlowDialogRef.current;
+		if (el && !el.open) {
+			el.showModal();
+		}
+	}, [selectedOrderIdForFlow, selectedOrderForFlow]);
+
+	useEffect(() => {
 		setSelectedFlowStepId(null);
 	}, [selectedBatchId]);
+
+	useEffect(() => {
+		if (tab !== 'operations') return;
+		if (typeof Notification === 'undefined') return;
+		if (Notification.permission !== 'granted') return;
+
+		const sinceMs = sessionStartMsRef.current - 4000;
+
+		for (const alarm of alarms) {
+			if (new Date(alarm.timestamp).getTime() < sinceMs) continue;
+			if (notifiedAlarmIdsRef.current.has(alarm.id)) continue;
+			notifiedAlarmIdsRef.current.add(alarm.id);
+			try {
+				new Notification(`Alarm (${alarm.severity})`, {
+					body: `${statusLabel(alarm.type)} — ${alarm.message}`,
+					tag: alarm.id,
+				});
+			} catch {
+				/* ignore */
+			}
+		}
+
+		for (const task of pendingTasks) {
+			if (new Date(task.createdAt).getTime() < sinceMs) continue;
+			if (notifiedTaskIdsRef.current.has(task.id)) continue;
+			notifiedTaskIdsRef.current.add(task.id);
+			try {
+				new Notification('Manual QA required', {
+					body: `${statusLabel(task.reason)} · batch ${shortBatchId(task.batchId)}`,
+					tag: task.id,
+				});
+			} catch {
+				/* ignore */
+			}
+		}
+	}, [alarms, pendingTasks, tab]);
 
 	useEffect(() => {
 		if (!attentionPopover) return;
@@ -362,6 +542,179 @@ export function OperatorConsole() {
 		await runAction(label, async () => {
 			await fetchJson(path, { method: 'POST', body: JSON.stringify(body) });
 		});
+	}
+
+	async function cancelBatch() {
+		if (!selectedBatchId) return;
+		if (
+			!window.confirm(
+				`Cancel batch ${shortBatchId(selectedBatchId)}? This stops the brew and fermentation schedule for this batch.`,
+			)
+		) {
+			return;
+		}
+		await runAction('Batch cancelled.', async () => {
+			await fetchJson(`/api/batches/${selectedBatchId}/cancel`, {
+				method: 'POST',
+			});
+		});
+	}
+
+	async function completeFermentationMonitoring() {
+		if (!selectedBatchId) return;
+		await runAction('Tank monitoring ended.', async () => {
+			await fetchJson(`/api/batches/${selectedBatchId}/complete-fermentation`, {
+				method: 'POST',
+			});
+		});
+	}
+
+	function openPackagingDialog() {
+		setPackageBeerName(selectedBatch?.beerName ?? beerName);
+		setPackageQuantityDelta('12');
+		setPackageUnit('case');
+		packageDialogRef.current?.showModal();
+	}
+
+	async function submitPackagingDemo() {
+		const name = packageBeerName.trim();
+		const delta = Number.parseInt(packageQuantityDelta, 10);
+		if (!name || !Number.isFinite(delta)) {
+			setNotice('Enter the beer name and how many units to add (whole number).');
+			return;
+		}
+		setBusy(true);
+		try {
+			await fetchJson<{ ok: boolean; workflowId: string }>(
+				'/api/simulator/packaged-stock',
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						productName: name,
+						quantityDelta: delta,
+						unit: packageUnit,
+						sourceBatchId: selectedBatchId || undefined,
+					}),
+				},
+			);
+			const unitLabel = `${packageUnit}${delta === 1 || delta === -1 ? '' : 's'}`;
+			setNotice(
+				`Packaged inventory updated: ${delta >= 0 ? '+' : ''}${delta} ${unitLabel} of ${name}. Open orders refresh on their next stock check.`,
+			);
+			packageDialogRef.current?.close();
+			await refresh(null, { includeOrders: true });
+		} catch (error) {
+			setNotice(error instanceof Error ? error.message : String(error));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function runStockSimulation() {
+		setBusy(true);
+		try {
+			const r = await fetchJson<{
+				ok: boolean;
+				replenished: Array<{
+					sku: string;
+					productName: string;
+					before: number;
+					after: number;
+				}>;
+				batchesStarted: Array<{
+					batchId: string;
+					beerName: string;
+					workflowId: string;
+				}>;
+				skipped: Array<{
+					sku: string;
+					productName: string;
+					reason: string;
+				}>;
+			}>('/api/simulator/stock', {
+				method: 'POST',
+				body: JSON.stringify({}),
+			});
+			const parts: string[] = [];
+			if (r.replenished.length > 0) {
+				parts.push(
+					`Added packaged stock: ${r.replenished.map((x) => `${x.productName} (${x.before}→${x.after})`).join(', ')}`,
+				);
+			}
+			if (r.batchesStarted.length > 0) {
+				parts.push(
+					`Started brew ${r.batchesStarted.map((b) => shortBatchId(b.batchId)).join(', ')}`,
+				);
+			}
+			if (r.skipped.length > 0) {
+				parts.push(
+					`No new brew started — beer already in progress for: ${r.skipped.map((s) => s.productName).join(', ')}`,
+				);
+			}
+			if (parts.length === 0) {
+				parts.push(
+					'Everything on hand is above the restock level. Lower packaged counts first if you want to test restocking.',
+				);
+			}
+			const msg = parts.join(' · ');
+			setNotice(msg);
+			setStockSimMessage(msg);
+			await refresh(r.batchesStarted[0]?.batchId ?? null, {
+				includeOrders: true,
+			});
+		} catch (error) {
+			const err = error instanceof Error ? error.message : String(error);
+			setNotice(err);
+			setStockSimMessage(err);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function placeCustomerOrder(item: InventoryItem) {
+		const quantity = Math.max(1, portalQtyBySku[item.sku] ?? 1);
+		if (!portalCustomerName.trim()) {
+			setPortalNotice('Enter your name to place an order.');
+			return;
+		}
+		if (item.quantity < 1) {
+			setPortalNotice(`Out of stock: ${item.productName}.`);
+			return;
+		}
+		if (quantity > item.quantity) {
+			setPortalNotice(
+				`Only ${item.quantity} in stock for ${item.productName}.`,
+			);
+			return;
+		}
+		setBusy(true);
+		setPortalNotice(null);
+		try {
+			const { order } = await fetchJson<{ order: Order; workflowId: string }>(
+				'/api/orders',
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						customer: {
+							name: portalCustomerName.trim(),
+							email: portalCustomerEmail.trim() || undefined,
+						},
+						product: item.productName,
+						quantity,
+					}),
+				},
+			);
+			setPortalNotice(
+				`Order placed for ${order.quantity}× ${order.product}. Watch the list below — it updates as we pull from packaged inventory.`,
+			);
+			await refresh();
+		} catch (error) {
+			setPortalNotice(
+				error instanceof Error ? error.message : String(error),
+			);
+		} finally {
+			setBusy(false);
+		}
 	}
 
 	async function approveTask(task: ManualTask) {
@@ -423,14 +776,27 @@ export function OperatorConsole() {
 		await refresh();
 	}
 
+	async function requestDesktopAlerts() {
+		if (typeof Notification === 'undefined') {
+			setNotice('Desktop notifications are not supported in this browser.');
+			return;
+		}
+		const permission = await Notification.requestPermission();
+		if (permission === 'granted') {
+			setNotice('Desktop alerts enabled for new alarms and QA tasks.');
+		} else if (permission === 'denied') {
+			setNotice('Desktop alerts blocked — enable them in browser settings if needed.');
+		}
+	}
+
 	return (
 		<>
 			<header className="topbar">
 				<div className="topbar-copy">
-					<h1>Brewery Process Console</h1>
+					<h1>Brewery floor dashboard</h1>
 					<p>
-						Start batches, stream telemetry, and inspect live workflow state in one
-						place.
+						Start brews, watch tank readings, handle quality checks, and keep an eye on
+						packaged orders — all in one place.
 					</p>
 				</div>
 				<div className="topbar-actions">
@@ -443,20 +809,31 @@ export function OperatorConsole() {
 						<Plus size={18} />
 						Brew new
 					</button>
+					{typeof Notification !== 'undefined' &&
+					Notification.permission !== 'granted' ? (
+						<button
+							type="button"
+							className="topbar-link topbar-link-button"
+							onClick={() => void requestDesktopAlerts()}
+						>
+							Enable desktop alerts
+						</button>
+					) : null}
 					<a
 						className="topbar-link"
 						href="http://localhost:8233"
 						target="_blank"
 						rel="noreferrer"
+						title="For staff who maintain the scheduling system"
 					>
-						Temporal UI
+						Scheduling (IT)
 					</a>
 				</div>
 			</header>
 
 			<section className="dashboard">
 			<div className="tabs-wrap">
-				<div className="tabs" aria-label="Dashboard sections">
+				<div className="tabs" aria-label="Main sections">
 					<button
 						type="button"
 						className={tab === 'operations' ? 'selected' : ''}
@@ -472,6 +849,14 @@ export function OperatorConsole() {
 					>
 						<ShoppingCart size={18} />
 						Support
+					</button>
+					<button
+						type="button"
+						className={tab === 'customer' ? 'selected' : ''}
+						onClick={() => setTab('customer')}
+					>
+						<Beer size={18} />
+						Customer
 					</button>
 				</div>
 			</div>
@@ -489,8 +874,8 @@ export function OperatorConsole() {
 							<div>
 								<h2>Beers in production</h2>
 								<p>
-									Active brews on the floor. Select a row to load telemetry and
-									workflow detail.
+									Active brews on the floor. Select a row to load live readings and
+									status for that batch.
 								</p>
 							</div>
 						</div>
@@ -563,6 +948,25 @@ export function OperatorConsole() {
 							<div className="section-head-actions">
 								<button type="button" disabled={busy} onClick={() => refresh()}>
 									<RefreshCw size={18} />
+								</button>
+								<button
+									type="button"
+									disabled={busy || !selectedBatchId}
+									title="Marks tank monitoring done so this batch can close out cleanly"
+									onClick={() => void completeFermentationMonitoring()}
+								>
+									<CheckCircle2 size={18} />
+									Finish tank monitoring
+								</button>
+								<button
+									type="button"
+									className="danger"
+									disabled={busy || !selectedBatchId}
+									title="Stop this brew and its fermentation schedule"
+									onClick={() => void cancelBatch()}
+								>
+									<Ban size={18} />
+									Cancel batch
 								</button>
 								<div
 									className="ops-attention-icons"
@@ -741,6 +1145,24 @@ export function OperatorConsole() {
 							>
 								Recovery
 							</button>
+							<button
+								type="button"
+								disabled={busy}
+								title="Demo: add packaged stock when counts are low and start a brew if nothing is already running for that beer"
+								onClick={() => void runStockSimulation()}
+							>
+								<PackagePlus size={18} />
+								Restock helper
+							</button>
+							<button
+								type="button"
+								disabled={busy}
+								title="Demo: add packaged beer through a short scheduling job (shows as a completed run)"
+								onClick={() => openPackagingDialog()}
+							>
+								<Package size={18} />
+								Record packaging
+							</button>
 						</div>
 					</section>
 					<section className="panel ops-area-status" aria-label="Batch status">
@@ -784,8 +1206,8 @@ export function OperatorConsole() {
 								<h2>Process Map</h2>
 								<p>
 									Click a step to see related live readings. Mash, boil, and chill use
-									the latest kettle-side telemetry; fermentation uses the full sensor
-									set. Click empty canvas to clear.
+									the latest brewhouse readings; fermentation uses the full tank
+									sensor set. Click empty space on the map to clear your selection.
 								</p>
 							</div>
 						</div>
@@ -805,21 +1227,21 @@ export function OperatorConsole() {
 						<div className="step-readings">
 							{!selectedFlowStepId ? (
 								<p className="note step-readings-hint">
-									Select Mash, Boil, Chill, Fermentation, or Telemetry ingest to
-									inspect readings tied to that part of the flow.
+									Select Mash, Boil, Chill, Fermentation, or Tank sensors to see
+									readings for that part of the brew.
 								</p>
 							) : null}
 							{selectedFlowStepId && !stepSensorFields(selectedFlowStepId) ? (
 								<p className="note">
-									{`"${FLOW_STEP_TITLES[selectedFlowStepId]}" has no instrument mapping on this map. Try Mash, Boil, Chill, Fermentation, or Telemetry ingest.`}
+									{`"${FLOW_STEP_TITLES[selectedFlowStepId]}" doesn't have tank readings on this map. Try Mash, Boil, Chill, Fermentation, or Tank sensors.`}
 								</p>
 							) : null}
 							{selectedFlowStepId &&
 							stepSensorFields(selectedFlowStepId) &&
 							!currentReading ? (
 								<p className="note">
-									No readings for this batch yet. Start fermentation monitoring and
-									publish telemetry from Batch Control.
+									No readings for this batch yet. Once fermentation is running and
+									sensors are sending data, numbers will show here.
 								</p>
 							) : null}
 							{selectedFlowStepId &&
@@ -828,8 +1250,8 @@ export function OperatorConsole() {
 								<>
 									<p className="step-readings-caption">
 										Live values for{' '}
-										<strong>{FLOW_STEP_TITLES[selectedFlowStepId]}</strong> (from
-										latest fermentation reading)
+										<strong>{FLOW_STEP_TITLES[selectedFlowStepId]}</strong> (latest
+										tank reading)
 									</p>
 									<div className="step-sensor-grid">
 										{stepSensorFields(selectedFlowStepId)!.map((field) => (
@@ -851,7 +1273,7 @@ export function OperatorConsole() {
 									<h2>Sensor History</h2>
 									<p>
 										{chartSeriesKeys === null
-											? `${FLOW_STEP_TITLES[selectedFlowStepId]} has no plotted sensors—pick Mash, Boil, Chill, Fermentation, or Telemetry ingest.`
+											? `${FLOW_STEP_TITLES[selectedFlowStepId]} has no chart here — pick Mash, Boil, Chill, Fermentation, or Tank sensors.`
 											: `${readings.length} readings · ${FLOW_STEP_TITLES[selectedFlowStepId]}`}
 									</p>
 								</div>
@@ -881,7 +1303,7 @@ export function OperatorConsole() {
 						onClick={(event) => event.stopPropagation()}
 					>
 						<h3>Start new batch</h3>
-						<p>Creates a brew workflow and selects it for monitoring.</p>
+						<p>Adds this beer to the schedule and opens it on your dashboard.</p>
 						<label className="field-label" htmlFor="brew-modal-beer-name">
 							Beer name
 						</label>
@@ -906,15 +1328,30 @@ export function OperatorConsole() {
 					</form>
 				</dialog>
 				</>
-			) : (
+			) : tab === 'support' ? (
+				<>
 				<div className="support-grid">
 					<section className="panel stack">
 						<div className="section-head">
 							<div>
 								<h2>Inventory</h2>
-								<p>Customer-safe availability</p>
+								<p>Packaged beer you list as available to sell</p>
+								{stockSimMessage ? (
+									<p className="note">{stockSimMessage}</p>
+								) : null}
 							</div>
-							<ShoppingCart size={20} />
+							<div className="section-head-actions">
+								<button
+									type="button"
+									disabled={busy}
+									title="When packaged counts are low, add stock and start a brew if that beer is not already running"
+									onClick={() => void runStockSimulation()}
+								>
+									<PackagePlus size={18} />
+									Restock helper
+								</button>
+								<ShoppingCart size={20} aria-hidden />
+							</div>
 						</div>
 						<div className="feed">
 							{inventory.map((item) => (
@@ -934,7 +1371,7 @@ export function OperatorConsole() {
 						<div className="section-head">
 							<div>
 								<h2>Support Agent</h2>
-								<p>Customer-facing ETA and order help</p>
+								<p>Answers for customers about timing and what is on hand</p>
 							</div>
 							<MessageSquare size={20} />
 						</div>
@@ -956,8 +1393,266 @@ export function OperatorConsole() {
 						</div>
 					</section>
 				</div>
+				<section className="panel stack support-ops-orders">
+						<div className="section-head">
+							<div>
+								<h2>Orders — brewery view</h2>
+								<p>
+									Same live status your customers see. The list refreshes on its
+									own. Click an order to open its progress map.
+								</p>
+							</div>
+							<ShoppingCart size={20} aria-hidden />
+						</div>
+						<div className="feed portal-orders-feed">
+							<OrderStatusFeed
+								orders={ordersRecent}
+								selectedOrderId={selectedOrderIdForFlow}
+								onSelectOrder={selectOrderForFlow}
+							/>
+						</div>
+				</section>
+				</>
+			) : (
+				<div className="support-grid portal-customer-grid">
+					<section className="panel stack">
+						<div className="section-head">
+							<div>
+								<h2>Customer portal</h2>
+								<p>
+									When packaged beer is on hand, we reserve it for the order. If
+									we are short, the order waits and keeps checking until stock comes
+									in or a new brew is packaged.
+								</p>
+								{portalNotice ? (
+									<p className="note">{portalNotice}</p>
+								) : null}
+							</div>
+							<Beer size={22} aria-hidden />
+						</div>
+						<div className="portal-customer-fields">
+							<div>
+								<label className="field-label" htmlFor="portal-customer-name">
+									Your name
+								</label>
+								<input
+									id="portal-customer-name"
+									value={portalCustomerName}
+									onChange={(event) =>
+										setPortalCustomerName(event.target.value)
+									}
+									autoComplete="name"
+								/>
+							</div>
+							<div>
+								<label className="field-label" htmlFor="portal-customer-email">
+									Email (optional)
+								</label>
+								<input
+									id="portal-customer-email"
+									type="email"
+									value={portalCustomerEmail}
+									onChange={(event) =>
+										setPortalCustomerEmail(event.target.value)
+									}
+									autoComplete="email"
+								/>
+							</div>
+						</div>
+						<div className="feed portal-customer-products">
+							{inventory.length === 0 ? (
+								<p className="note">No catalog items yet.</p>
+							) : null}
+							{inventory.map((item) => (
+								<article
+									className="inventory-item portal-product-row"
+									key={item.sku}
+								>
+									<div className="portal-product-meta">
+										<strong>{item.productName}</strong>
+										<span>
+											{item.quantity} {item.unit}
+											{item.quantity === 1 ? '' : 's'} in stock
+										</span>
+										<small>{item.sku}</small>
+									</div>
+									<label className="portal-qty-label">
+										Qty
+										<input
+											type="number"
+											min={1}
+											max={Math.max(1, item.quantity)}
+											value={String(portalQtyBySku[item.sku] ?? 1)}
+											onChange={(event) => {
+												const v = Number.parseInt(event.target.value, 10);
+												setPortalQtyBySku((prev) => ({
+													...prev,
+													[item.sku]: Number.isFinite(v)
+														? Math.max(1, v)
+														: 1,
+												}));
+											}}
+										/>
+									</label>
+									<button
+										type="button"
+										className="primary"
+										disabled={busy || item.quantity < 1}
+										onClick={() => void placeCustomerOrder(item)}
+									>
+										<ShoppingCart size={18} />
+										Order
+									</button>
+								</article>
+							))}
+						</div>
+					</section>
+					<section className="panel stack">
+						<div className="section-head">
+							<div>
+								<h2>Recent orders</h2>
+								<p>
+									Shows whether beer was pulled from packaged inventory or is still
+									waiting. Click an order to see its progress map.
+								</p>
+							</div>
+							<ShoppingCart size={20} aria-hidden />
+						</div>
+						<div className="feed portal-orders-feed">
+							<OrderStatusFeed
+								orders={ordersRecent}
+								selectedOrderId={selectedOrderIdForFlow}
+								onSelectOrder={selectOrderForFlow}
+							/>
+						</div>
+					</section>
+				</div>
 			)}
 			</section>
+
+			<dialog
+				ref={packageDialogRef}
+				className="brew-modal"
+				onClick={(event) => {
+					if (event.target === event.currentTarget) {
+						packageDialogRef.current?.close();
+					}
+				}}
+			>
+				<form
+					className="modal-panel"
+					onSubmit={(event) => {
+						event.preventDefault();
+						void submitPackagingDemo();
+					}}
+					onClick={(event) => event.stopPropagation()}
+				>
+					<h3>Record packaged beer</h3>
+					<p>
+						Adds to packaged inventory so orders and the inventory list stay in sync.
+						Use a negative number to subtract (for example correcting a mistake). The
+						selected batch is noted when one is chosen.
+					</p>
+					<label className="field-label" htmlFor="package-beer-name">
+						Beer name
+					</label>
+					<input
+						id="package-beer-name"
+						value={packageBeerName}
+						onChange={(event) => setPackageBeerName(event.target.value)}
+						autoComplete="off"
+					/>
+					<label className="field-label" htmlFor="package-unit-kind">
+						Package type
+					</label>
+					<select
+						id="package-unit-kind"
+						value={packageUnit}
+						onChange={(event) =>
+							setPackageUnit(event.target.value as 'case' | 'keg' | 'can')
+						}
+					>
+						<option value="case">Case</option>
+						<option value="keg">Keg</option>
+						<option value="can">Can</option>
+					</select>
+					<label className="field-label" htmlFor="package-delta">
+						How many to add (use minus to remove)
+					</label>
+					<input
+						id="package-delta"
+						type="number"
+						value={packageQuantityDelta}
+						onChange={(event) => setPackageQuantityDelta(event.target.value)}
+					/>
+					<div className="modal-actions">
+						<button
+							type="button"
+							onClick={() => packageDialogRef.current?.close()}
+						>
+							Cancel
+						</button>
+						<button type="submit" className="primary" disabled={busy}>
+							<Package size={18} />
+							Apply
+						</button>
+					</div>
+				</form>
+			</dialog>
+
+			<dialog
+				ref={orderFlowDialogRef}
+				className="brew-modal order-flow-modal"
+				onClose={() => {
+					setSelectedOrderIdForFlow(null);
+				}}
+				onClick={(event) => {
+					if (event.target === event.currentTarget) {
+						orderFlowDialogRef.current?.close();
+					}
+				}}
+			>
+				<div
+					className="modal-panel order-flow-modal-panel"
+					onClick={(event) => event.stopPropagation()}
+				>
+					<h3>Order progress</h3>
+					{selectedOrderForFlow ? (
+						<>
+							<p className="order-flow-summary">
+								<strong>{selectedOrderForFlow.product}</strong>
+								{' · '}
+								{selectedOrderForFlow.quantity} units ·{' '}
+								{formatOrderDisplay(selectedOrderForFlow)}
+								<br />
+								<small>
+									{selectedOrderForFlow.id} ·{' '}
+									{selectedOrderForFlow.customer.name}
+								</small>
+							</p>
+							<p className="note">
+								Highlights show where this order sits from receipt through packaged
+								stock and ready-to-go. The map updates on its own while this window
+								is open.
+							</p>
+							<div className="order-flow-diagram-wrap">
+								<OrderFulfillmentFlow
+									key={selectedOrderForFlow.id}
+									order={selectedOrderForFlow}
+								/>
+							</div>
+						</>
+					) : null}
+					<div className="modal-actions">
+						<button
+							type="button"
+							onClick={() => orderFlowDialogRef.current?.close()}
+						>
+							Close
+						</button>
+					</div>
+				</div>
+			</dialog>
 		</>
 	);
 }

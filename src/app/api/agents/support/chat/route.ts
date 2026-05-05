@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
 import { agentChatSchema, orderCreateSchema } from "../../../../../lib/domain/schemas";
 import type { Order } from "../../../../../lib/domain/types";
+import { temporalBridge } from "../../../../../lib/temporal/bridge";
 import { appendJsonl } from "../../../../../runtime/jsonl";
 import { getBatchSummaries, getInventory } from "../../../../../runtime/read-model";
 
@@ -11,8 +12,12 @@ export const dynamic = "force-dynamic";
 function etaForStage(stage?: string): string {
   if (stage === "fermentation") return "about 3–5 days once fermentation stabilizes";
   if (stage === "chill") return "shortly after fermentation is underway";
-  if (stage === "mash" || stage === "boil") return "later today after kettle operations finish";
-  return "once the next batch completes fermentation";
+  if (stage === "mash" || stage === "boil") return "later today after kettle work wraps";
+  return "once the next batch finishes fermentation";
+}
+
+function stageWords(stage: string): string {
+  return stage.replaceAll("_", " ");
 }
 
 export async function POST(request: Request) {
@@ -30,21 +35,23 @@ export async function POST(request: Request) {
         quantity: 1
       });
       if (!parsed.success) throw new Error(parsed.error.message);
-      const order: Order = {
+      const createdAt = new Date().toISOString();
+      const base: Order = {
         id: `order-${nanoid(8)}`,
         customer: { id: `customer-${nanoid(6)}`, ...parsed.data.customer },
         product: parsed.data.product,
         quantity: parsed.data.quantity,
         requestedDate: parsed.data.requestedDate,
-        status: productMatch && productMatch.quantity > 0 ? "created" : "pending_batch",
-        createdAt: new Date().toISOString()
+        status: "created",
+        createdAt
       };
-      await appendJsonl("orders", order);
+      await appendJsonl("orders", { ...base, updatedAt: createdAt });
+      await temporalBridge("start-order", { order: base });
       return NextResponse.json({
         role: "support",
-        toolsUsed: ["check_inventory", "create_order"],
-        message: `I created order ${order.id} for ${order.quantity} ${order.product}. ${order.status === "created" ? "It is available now." : "It will be ready when the next batch finishes."}`,
-        order
+        toolsUsed: ["check_inventory", "create_order", "start_order_workflow"],
+        message: `I placed order ${base.id} for ${base.quantity}× ${base.product}. Share the Customer tab so they can watch status move from checking stock to ready.`,
+        order: base
       });
     }
 
@@ -55,7 +62,7 @@ export async function POST(request: Request) {
         toolsUsed: ["check_inventory"],
         message: item
           ? `${item.productName} has ${item.quantity} ${item.unit}${item.quantity === 1 ? "" : "s"} available.`
-          : "I do not see available inventory yet, but I can check live batch readiness."
+          : "I don't see packaged counts loaded yet, but I can still talk through what's brewing."
       });
     }
 
@@ -63,8 +70,8 @@ export async function POST(request: Request) {
       role: "support",
       toolsUsed: ["get_batch_eta"],
       message: batchMatch
-        ? `${batchMatch.beerName} is currently in ${batchMatch.stage}. Expected availability is ${etaForStage(batchMatch.stage)}.`
-        : "No live batches are available yet, so I cannot provide a real ETA."
+        ? `${batchMatch.beerName} is in ${stageWords(batchMatch.stage)} right now. Rough timing: ${etaForStage(batchMatch.stage)}.`
+        : "Nothing is brewing on the board yet, so I can't estimate when beer will be ready."
     });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });

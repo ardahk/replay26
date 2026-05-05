@@ -34,6 +34,24 @@ export const simulatorInjectSchema = z.object({
   tick: z.number().int().nonnegative().optional()
 });
 
+/** Demo tool: when packaged count is below lowThreshold, optionally bump inventory and start a brew if that beer isn't already running. */
+export const stockSimulatorSchema = z.object({
+  lowThreshold: z.number().int().nonnegative().default(10),
+  restockAmount: z.number().int().positive().default(24),
+  restockInventory: z.boolean().default(true),
+  startBatch: z.boolean().default(true),
+  sku: z.string().optional()
+});
+
+/** Runs a short Temporal workflow that adjusts packaged inventory (merge-by-SKU JSONL). */
+export const packagedStockAdjustSchema = z.object({
+  productName: z.string().min(1),
+  sku: z.string().optional(),
+  quantityDelta: z.number().int(),
+  unit: z.enum(["keg", "case", "can"]).optional(),
+  sourceBatchId: z.string().optional()
+});
+
 export const signalRequestSchema = z.discriminatedUnion("signalName", [
   z.object({
     signalName: z.literal("sensor_reading"),

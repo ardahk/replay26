@@ -120,6 +120,16 @@ export interface InventoryItem {
   updatedAt: string;
 }
 
+/** Demo / integration: bump packaged counts through Temporal so runs show up as completed workflows. */
+export interface PackagedStockAdjustment {
+  productName: string;
+  sku?: string;
+  quantityDelta: number;
+  unit?: InventoryItem["unit"];
+  /** Optional link back to the batch that was packaged */
+  sourceBatchId?: string;
+}
+
 export interface Order {
   id: string;
   customer: Customer;
@@ -128,4 +138,20 @@ export interface Order {
   requestedDate?: string;
   status: "created" | "pending_batch" | "ready";
   createdAt: string;
+  /** Latest mutation time for JSONL merge / UI */
+  updatedAt?: string;
+}
+
+export type OrderFulfillmentPhase = "allocating" | "awaiting_inventory" | "fulfilled";
+
+/** Live snapshot from `orderFulfillmentWorkflow` query (running workflows only). */
+export interface OrderFulfillmentLiveState {
+  orderId: string;
+  phase: OrderFulfillmentPhase;
+  order: Order;
+}
+
+/** Order row merged from JSONL plus optional Temporal fulfillment query. */
+export interface OrderWithFulfillment extends Order {
+  fulfillment: OrderFulfillmentLiveState | null;
 }

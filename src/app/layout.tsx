@@ -3,8 +3,8 @@ import "@xyflow/react/dist/style.css";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "Brewery Operations Console",
-  description: "Monitor batches, telemetry, QA, and alarms with Temporal-backed workflows."
+  title: "Brewery floor dashboard",
+  description: "Watch batches, tank readings, quality checks, and alerts in one place."
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
