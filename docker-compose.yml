@@ -1,6 +1,6 @@
 services:
   temporal:
-    image: temporalio/temporal:1.31.0
+    image: temporalio/temporal:1.7.0
     container_name: replay26-temporal
     command: server start-dev --ip 0.0.0.0 --db-filename /home/temporal/temporal.db
     ports:
