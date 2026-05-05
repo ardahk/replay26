@@ -1,18 +1,16 @@
 import { NextResponse } from "next/server";
 import { agentChatSchema } from "../../../../../lib/domain/schemas";
-import type { ApproveQaInput, ManualOverrideInput } from "../../../../../lib/domain/types";
-import { getTemporalClient } from "../../../../../lib/temporal/client";
-import { fermentationWorkflowId } from "../../../../../lib/temporal/ids";
+import type { ApproveQaInput, FermentationStatus, ManualOverrideInput } from "../../../../../lib/domain/types";
+import { temporalBridge } from "../../../../../lib/temporal/bridge";
 import { getAlarms, getBatchSummaries, getManualTasks, getSensorHistory } from "../../../../../runtime/read-model";
-import { approveQaSignal, getFermentationStatus, manualOverrideSignal } from "../../../../../temporal/workflows";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function getLiveFermentation(batchId: string) {
   try {
-    const client = await getTemporalClient();
-    return await client.workflow.getHandle(fermentationWorkflowId(batchId)).query(getFermentationStatus);
+    const status = await temporalBridge<{ fermentation: FermentationStatus | null }>("status", { batchId });
+    return status.fermentation;
   } catch {
     return null;
   }
@@ -28,13 +26,11 @@ export async function POST(request: Request) {
     }
 
     if (payload.confirm && payload.pendingAction) {
-      const client = await getTemporalClient();
-      const handle = client.workflow.getHandle(fermentationWorkflowId(batchId));
       if (payload.pendingAction.type === "approve_qa") {
-        await handle.signal(approveQaSignal, payload.pendingAction.payload as ApproveQaInput);
+        await temporalBridge("approve-qa", { batchId, payload: payload.pendingAction.payload as ApproveQaInput });
         return NextResponse.json({ role: "brewmaster", batchId, message: "QA approval sent into the fermentation workflow." });
       }
-      await handle.signal(manualOverrideSignal, payload.pendingAction.payload as ManualOverrideInput);
+      await temporalBridge("manual-override", { batchId, payload: payload.pendingAction.payload as ManualOverrideInput });
       return NextResponse.json({ role: "brewmaster", batchId, message: "Manual override signal sent into the fermentation workflow." });
     }
 
