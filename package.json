@@ -19,6 +19,7 @@
     "@temporalio/common": "latest",
     "@temporalio/worker": "latest",
     "@temporalio/workflow": "latest",
+    "@xyflow/react": "^12.10.2",
     "date-fns": "latest",
     "lucide-react": "latest",
     "nanoid": "latest",

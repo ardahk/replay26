@@ -31,6 +31,10 @@ const SensorChart = dynamic(() => import("./sensor-chart").then((module) => modu
   ssr: false
 });
 
+const ProcessFlow = dynamic(() => import("./process-flow").then((module) => module.ProcessFlow), {
+  ssr: false
+});
+
 interface BatchStatusPayload {
   batchId: string;
   brew?: BrewWorkflowStatus;
@@ -349,6 +353,24 @@ export function OperatorConsole() {
                 <span>CO2</span>
                 <strong>{currentReading ? `${currentReading.co2Ppm}ppm` : "n/a"}</strong>
               </div>
+            </div>
+          </section>
+
+          <section className="panel flow-panel">
+            <div className="section-head">
+              <div>
+                <h2>Process Map</h2>
+                <p>Temporal workflow, signals, alarms, QA, and agents</p>
+              </div>
+            </div>
+            <div className="flow-wrap">
+              <ProcessFlow
+                stage={status?.brew?.stage ?? selectedBatch?.stage}
+                health={status?.fermentation?.health ?? selectedBatch?.status}
+                readingCount={status?.fermentation?.readingCount ?? readings.length}
+                alarmCount={alarms.length}
+                pendingTaskCount={pendingTasks.length}
+              />
             </div>
           </section>
 
