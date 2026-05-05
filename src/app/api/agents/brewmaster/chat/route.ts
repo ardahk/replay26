@@ -1,0 +1,94 @@
+import { NextResponse } from "next/server";
+import { agentChatSchema } from "../../../../../lib/domain/schemas";
+import type { ApproveQaInput, ManualOverrideInput } from "../../../../../lib/domain/types";
+import { getTemporalClient } from "../../../../../lib/temporal/client";
+import { fermentationWorkflowId } from "../../../../../lib/temporal/ids";
+import { getAlarms, getBatchSummaries, getManualTasks, getSensorHistory } from "../../../../../runtime/read-model";
+import { approveQaSignal, getFermentationStatus, manualOverrideSignal } from "../../../../../temporal/workflows";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+async function getLiveFermentation(batchId: string) {
+  try {
+    const client = await getTemporalClient();
+    return await client.workflow.getHandle(fermentationWorkflowId(batchId)).query(getFermentationStatus);
+  } catch {
+    return null;
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const payload = agentChatSchema.parse(await request.json());
+    const batches = await getBatchSummaries();
+    const batchId = payload.batchId ?? batches[0]?.batchId;
+    if (!batchId) {
+      return NextResponse.json({ role: "brewmaster", message: "No batches are available yet. Start a batch first." });
+    }
+
+    if (payload.confirm && payload.pendingAction) {
+      const client = await getTemporalClient();
+      const handle = client.workflow.getHandle(fermentationWorkflowId(batchId));
+      if (payload.pendingAction.type === "approve_qa") {
+        await handle.signal(approveQaSignal, payload.pendingAction.payload as ApproveQaInput);
+        return NextResponse.json({ role: "brewmaster", batchId, message: "QA approval sent into the fermentation workflow." });
+      }
+      await handle.signal(manualOverrideSignal, payload.pendingAction.payload as ManualOverrideInput);
+      return NextResponse.json({ role: "brewmaster", batchId, message: "Manual override signal sent into the fermentation workflow." });
+    }
+
+    const [live, readings, alarms, tasks] = await Promise.all([
+      getLiveFermentation(batchId),
+      getSensorHistory(batchId),
+      getAlarms(batchId),
+      getManualTasks(batchId)
+    ]);
+    const latest = live?.latestReading ?? readings.at(-1);
+    const pending = tasks.filter((task) => task.status === "pending");
+    const lower = payload.message.toLowerCase();
+
+    if (lower.includes("approve") && pending[0]) {
+      return NextResponse.json({
+        role: "brewmaster",
+        batchId,
+        message: `I found pending QA task ${pending[0].id} for ${pending[0].reason}. Confirm to approve it.`,
+        pendingAction: {
+          type: "approve_qa",
+          payload: { taskId: pending[0].id, note: "Approved by brewmaster agent" }
+        }
+      });
+    }
+
+    if (lower.includes("override") || lower.includes("signal")) {
+      return NextResponse.json({
+        role: "brewmaster",
+        batchId,
+        message: "I can send a manual override signal, but I need confirmation before touching the workflow.",
+        pendingAction: {
+          type: "send_signal",
+          payload: { note: `Operator requested: ${payload.message}` }
+        }
+      });
+    }
+
+    const risk = pending.length > 0 || alarms.some((alarm) => alarm.severity === "critical") ? "needs attention" : "stable";
+    const message = [
+      `Batch ${batchId} is ${risk}.`,
+      latest
+        ? `Latest reading: ${latest.temperatureC}C, gravity ${latest.gravity}, pH ${latest.pH}, CO2 ${latest.co2Ppm}ppm.`
+        : "No fermentation readings have landed yet.",
+      alarms[0] ? `Most recent alarm: ${alarms[0].type} (${alarms[0].severity}) - ${alarms[0].message}.` : "No alarms are recorded.",
+      pending[0] ? `Pending QA: ${pending[0].reason} (${pending[0].id}).` : "No pending QA tasks."
+    ].join(" ");
+
+    return NextResponse.json({
+      role: "brewmaster",
+      batchId,
+      toolsUsed: ["get_batch_status", "get_sensor_history"],
+      message
+    });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+  }
+}

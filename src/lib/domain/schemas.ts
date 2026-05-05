@@ -51,3 +51,37 @@ export const signalRequestSchema = z.discriminatedUnion("signalName", [
 export const approveQaSchema = z.object({
   note: z.string().optional()
 });
+
+export const agentChatSchema = z.object({
+  batchId: z.string().min(1).optional(),
+  message: z.string().min(1),
+  pendingAction: z
+    .object({
+      type: z.enum(["approve_qa", "send_signal"]),
+      payload: z.unknown()
+    })
+    .optional(),
+  confirm: z.boolean().default(false)
+});
+
+export const customerSchema = z.object({
+  id: z.string().min(1).optional(),
+  name: z.string().min(1),
+  email: z.string().email().optional()
+});
+
+export const orderCreateSchema = z.object({
+  customer: customerSchema,
+  product: z.string().min(1),
+  quantity: z.number().int().positive(),
+  requestedDate: z.string().optional()
+});
+
+export const inventoryItemSchema = z.object({
+  sku: z.string().min(1),
+  productName: z.string().min(1),
+  quantity: z.number().int().nonnegative(),
+  unit: z.enum(["keg", "case", "can"]),
+  batchId: z.string().optional(),
+  updatedAt: z.string().min(1).optional()
+});

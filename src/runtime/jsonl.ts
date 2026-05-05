@@ -1,7 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-type RuntimeFile = "events" | "readings" | "alarms" | "manual_tasks";
+type RuntimeFile = "events" | "readings" | "alarms" | "manual_tasks" | "inventory" | "orders";
 
 function runtimeDir(): string {
   return process.env.RUNTIME_DIR ?? ".runtime";
@@ -9,7 +9,7 @@ function runtimeDir(): string {
 
 function runtimeRoot(): string {
   const dir = runtimeDir();
-  return path.isAbsolute(dir) ? dir : path.join(process.cwd(), dir);
+  return path.isAbsolute(dir) ? dir : path.join(/*turbopackIgnore: true*/ process.cwd(), dir);
 }
 
 function filePath(file: RuntimeFile): string {
@@ -19,16 +19,7 @@ function filePath(file: RuntimeFile): string {
 export async function appendJsonl(file: RuntimeFile, value: unknown): Promise<void> {
   await mkdir(runtimeRoot(), { recursive: true });
   const line = `${JSON.stringify(value)}\n`;
-  const target = filePath(file);
-  let previous = "";
-
-  try {
-    previous = await readFile(target, "utf8");
-  } catch {
-    previous = "";
-  }
-
-  await writeFile(target, previous + line, "utf8");
+  await appendFile(filePath(file), line, "utf8");
 }
 
 export async function readJsonl<T>(file: RuntimeFile): Promise<T[]> {

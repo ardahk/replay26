@@ -84,3 +84,48 @@ export interface ApproveQaInput {
   taskId: string;
   note?: string;
 }
+
+export interface BatchEvent {
+  batchId: string;
+  type: string;
+  message: string;
+  timestamp: string;
+  beerName?: string;
+}
+
+export interface BatchSummary {
+  batchId: string;
+  beerName: string;
+  status: BatchStatus;
+  stage: BrewStage;
+  startedAt: string;
+  updatedAt: string;
+  latestReading?: SensorReading;
+  alarmCount: number;
+  pendingTaskCount: number;
+}
+
+export interface Customer {
+  id: string;
+  name: string;
+  email?: string;
+}
+
+export interface InventoryItem {
+  sku: string;
+  productName: string;
+  quantity: number;
+  unit: "keg" | "case" | "can";
+  batchId?: string;
+  updatedAt: string;
+}
+
+export interface Order {
+  id: string;
+  customer: Customer;
+  product: string;
+  quantity: number;
+  requestedDate?: string;
+  status: "created" | "pending_batch" | "ready";
+  createdAt: string;
+}

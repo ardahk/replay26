@@ -3,9 +3,17 @@ import { NextResponse } from "next/server";
 import { startBatchSchema } from "../../../lib/domain/schemas";
 import { getTemporalClient } from "../../../lib/temporal/client";
 import { brewWorkflowId, TASK_QUEUE } from "../../../lib/temporal/ids";
+import { appendJsonl } from "../../../runtime/jsonl";
+import { getBatchSummaries } from "../../../runtime/read-model";
 import { brewDayWorkflow } from "../../../temporal/workflows";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const batches = await getBatchSummaries();
+  return NextResponse.json({ batches });
+}
 
 export async function POST(request: Request) {
   try {
@@ -24,6 +32,14 @@ export async function POST(request: Request) {
           startedAt
         }
       ]
+    });
+
+    await appendJsonl("events", {
+      batchId,
+      beerName: payload.beerName,
+      type: "batch_started",
+      message: `${payload.beerName} brew day requested`,
+      timestamp: startedAt
     });
 
     return NextResponse.json({

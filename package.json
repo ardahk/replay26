@@ -10,7 +10,8 @@
     "test": "vitest run",
     "temporal:up": "docker compose up temporal",
     "temporal:worker": "tsx src/temporal/worker.ts",
-    "sim:run": "tsx src/simulator/cli.ts"
+    "sim:run": "tsx src/simulator/cli.ts",
+    "demo:seed": "tsx src/simulator/demo-seed.ts"
   },
   "dependencies": {
     "@temporalio/activity": "latest",

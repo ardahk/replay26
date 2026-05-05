@@ -34,6 +34,7 @@ export async function fermentationMonitorWorkflow(input: StartBatchInput): Promi
   const tasks: ManualTask[] = [];
   let alarmCounter = 0;
   let taskCounter = 0;
+  let tempExcursionCount = 0;
   let updatedAt = input.startedAt;
 
   const health = (): BatchStatus => {
@@ -74,15 +75,19 @@ export async function fermentationMonitorWorkflow(input: StartBatchInput): Promi
     await activity.recordSensorReading(reading);
 
     const drafts = detectAlarmDrafts(reading, readings.slice(0, -1));
+    if (drafts.some((draft) => draft.type === "temp_excursion")) {
+      tempExcursionCount += 1;
+    }
+
     for (const draft of drafts) {
+      if (alarms.some((alarm) => alarm.type === draft.type)) continue;
       const alarm = makeAlarm(draft, reading.timestamp);
       alarms.push(alarm);
       await activity.recordAlarm(alarm);
       await activity.sendAlarmNotification(alarm);
     }
 
-    const tempExcursions = alarms.filter((alarm) => alarm.type === "temp_excursion").length;
-    if (tempExcursions >= 2 && !hasPendingTask(tasks, "repeated_temp_excursion")) {
+    if (tempExcursionCount >= 2 && !hasPendingTask(tasks, "repeated_temp_excursion")) {
       const task = makeTask("repeated_temp_excursion", reading.timestamp);
       tasks.push(task);
       await activity.createManualTask(task);
@@ -101,7 +106,8 @@ export async function fermentationMonitorWorkflow(input: StartBatchInput): Promi
       batchId: input.batchId,
       type: "manual_override",
       message: override.note,
-      timestamp: updatedAt
+      timestamp: updatedAt,
+      beerName: input.beerName
     });
   });
 
@@ -116,7 +122,8 @@ export async function fermentationMonitorWorkflow(input: StartBatchInput): Promi
       batchId: input.batchId,
       type: "qa_approved",
       message: `${approval.taskId} approved${approval.note ? `: ${approval.note}` : ""}`,
-      timestamp: updatedAt
+      timestamp: updatedAt,
+      beerName: input.beerName
     });
   });
 
@@ -124,7 +131,8 @@ export async function fermentationMonitorWorkflow(input: StartBatchInput): Promi
     batchId: input.batchId,
     type: "fermentation_started",
     message: `${input.beerName} entered fermentation monitoring`,
-    timestamp: input.startedAt
+    timestamp: input.startedAt,
+    beerName: input.beerName
   });
 
   await condition(() => false);

@@ -1,12 +1,5 @@
 import { appendJsonl } from "../../runtime/jsonl";
-import type { AlarmEvent, ManualTask, SensorReading } from "../../lib/domain/types";
-
-export interface BatchEvent {
-  batchId: string;
-  type: string;
-  message: string;
-  timestamp: string;
-}
+import type { AlarmEvent, BatchEvent, ManualTask, SensorReading } from "../../lib/domain/types";
 
 export async function recordBatchEvent(event: BatchEvent): Promise<void> {
   await appendJsonl("events", event);

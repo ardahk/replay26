@@ -39,7 +39,8 @@ export async function brewDayWorkflow(input: StartBatchInput): Promise<void> {
       batchId: input.batchId,
       type: `stage_${nextStage}`,
       message: `${input.beerName} moved to ${nextStage}`,
-      timestamp: updatedAt
+      timestamp: updatedAt,
+      beerName: input.beerName
     });
     await sleep(input.stageDurations?.[nextStage] ?? DEFAULT_DURATIONS[nextStage]);
   };
@@ -48,7 +49,8 @@ export async function brewDayWorkflow(input: StartBatchInput): Promise<void> {
     batchId: input.batchId,
     type: "batch_started",
     message: `${input.beerName} brew day started`,
-    timestamp: input.startedAt
+    timestamp: input.startedAt,
+    beerName: input.beerName
   });
 
   await runStage("mash");
@@ -68,7 +70,8 @@ export async function brewDayWorkflow(input: StartBatchInput): Promise<void> {
     batchId: input.batchId,
     type: "fermentation_handoff",
     message: `${input.beerName} handed off to fermentation monitor`,
-    timestamp: updatedAt
+    timestamp: updatedAt,
+    beerName: input.beerName
   });
 
   await sleep("365 days");

@@ -10,6 +10,13 @@ Next.js-first hackathon demo for a brewery process system backed by Temporal wor
 - JSONL demo read models in `.runtime/`
 - Local Temporal dev server through Docker Compose
 
+## Project notes
+
+Phase/worktree notes live in [`docs/`](./docs/README.md):
+
+- [Phase 0/1 Handoff](./docs/phase-0-1-handoff.md)
+- [Phase 2-4 Changes](./docs/phase-2-4-changes.md)
+
 ## Setup
 
 ```bash
@@ -93,4 +100,5 @@ curl -X POST http://localhost:3000/api/simulator/<batch-id>/inject \
 pnpm typecheck
 pnpm lint
 pnpm test
+pnpm build
 ```
