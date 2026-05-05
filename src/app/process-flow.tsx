@@ -5,7 +5,6 @@ import {
   Controls,
   Handle,
   MarkerType,
-  MiniMap,
   Position,
   ReactFlow,
   type Edge,
@@ -229,7 +228,6 @@ export function ProcessFlow({
       >
         <Background gap={20} />
         <Controls showInteractive={false} />
-        <MiniMap pannable={false} zoomable={false} />
       </ReactFlow>
     </div>
   );
